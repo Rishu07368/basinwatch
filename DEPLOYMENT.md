@@ -131,6 +131,7 @@ On Windows, BasinWatch stores user data here:
   archive\    sensors.bin
   saves\      last-session.bws and user-named saves
   reports\    exported situation reports
+  basinwatch.db  SQLite sensor and operations history
 ```
 
 Back up this `data` folder before upgrading or moving to a different PC. The `last-session.bws` file is updated after a clean exit. For a separate data location, start the launcher from PowerShell with:

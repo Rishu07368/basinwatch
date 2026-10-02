@@ -5,7 +5,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 
-public record AppPaths(Path root, Path logs, Path archive, Path saves, Path reports) {
+public record AppPaths(Path root, Path logs, Path archive, Path saves, Path reports,
+                       Path database) {
     public static Path resolveDataRoot(String[] arguments) {
         if (arguments == null || arguments.length == 0) {
             return defaultDataRoot();
@@ -38,10 +39,11 @@ public record AppPaths(Path root, Path logs, Path archive, Path saves, Path repo
         Path archive = absolute.resolve("data").resolve("archive");
         Path saves = absolute.resolve("data").resolve("saves");
         Path reports = absolute.resolve("data").resolve("reports");
+        Path database = absolute.resolve("data").resolve("basinwatch.db");
         Files.createDirectories(logs);
         Files.createDirectories(archive);
         Files.createDirectories(saves);
         Files.createDirectories(reports);
-        return new AppPaths(absolute, logs, archive, saves, reports);
+        return new AppPaths(absolute, logs, archive, saves, reports, database);
     }
 }

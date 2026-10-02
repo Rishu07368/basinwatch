@@ -4,6 +4,7 @@ import com.basinwatch.domain.BasinModel;
 import com.basinwatch.domain.BasinSnapshot;
 import com.basinwatch.domain.DispatchRequest;
 import com.basinwatch.domain.MissionStatus;
+import com.basinwatch.domain.MissionSnapshot;
 import com.basinwatch.domain.MissionType;
 import com.basinwatch.domain.ResourceAllocator;
 import com.basinwatch.domain.ResourceType;
@@ -11,6 +12,9 @@ import com.basinwatch.domain.SensorReading;
 import com.basinwatch.domain.SimulationPulse;
 import com.basinwatch.engine.BasinEngine;
 import com.basinwatch.engine.EventBuffer;
+import com.basinwatch.db.DatabaseHistoryEntry;
+import com.basinwatch.db.DatabaseHistoryType;
+import com.basinwatch.db.DatabaseService;
 import com.basinwatch.io.AppPaths;
 import com.basinwatch.io.SaveCatalog;
 import com.basinwatch.io.SensorArchive;
@@ -49,7 +53,9 @@ public final class InvariantSuite {
         savesRestoresAndRejectsUnsafeSnapshots();
         validatesArchiveHeaders();
         resolvesPerUserDataLocations();
+        persistsJdbcHistoryAndTransactions();
         runsACompleteOfflineEngineSession();
+        continuesWhenDatabaseIsUnavailable();
         System.out.println("BasinWatch invariant suite passed (" + assertions + " assertions).");
     }
 
@@ -287,6 +293,9 @@ public final class InvariantSuite {
                             && engine.diagnostics().activeEvents() == 0,
                     Duration.ofSeconds(5), "Paused event pipeline drains accepted observations.");
             check(engine.snapshot().tick() > 0, "Live simulation advances the basin clock.");
+            check(!engine.loadDatabaseHistory(DatabaseHistoryType.SENSORS)
+                            .get(5, TimeUnit.SECONDS).isEmpty(),
+                    "Processed observations are available from asynchronous JDBC history.");
 
             check(engine.dispatch("MIL", MissionType.PUMP_DEPLOYMENT),
                     "Dispatch is accepted into the bounded event queue.");
@@ -298,6 +307,21 @@ public final class InvariantSuite {
             long savedTick = engine.snapshot().tick();
             engine.load(namedSave).get(8, TimeUnit.SECONDS);
             check(engine.snapshot().tick() == savedTick, "Engine loads a consistent saved session.");
+            engine.start().get(5, TimeUnit.SECONDS);
+            await(() -> engine.snapshot().missions().stream()
+                            .anyMatch(mission -> mission.status() == MissionStatus.COMPLETED),
+                    Duration.ofSeconds(8), "A persisted mission completes through the existing simulation.");
+            engine.pause().get(8, TimeUnit.SECONDS);
+            check(engine.loadDatabaseHistory(DatabaseHistoryType.MISSIONS)
+                            .get(5, TimeUnit.SECONDS).stream()
+                            .anyMatch(entry -> entry.category().contains("COMPLETED")),
+                    "Mission lifecycle updates persist after completion.");
+            check(!engine.loadDatabaseHistory(DatabaseHistoryType.RESOURCES)
+                            .get(5, TimeUnit.SECONDS).isEmpty(),
+                    "Mission resource allocations are persisted with their mission.");
+            check(!engine.loadDatabaseHistory(DatabaseHistoryType.EVENTS)
+                            .get(5, TimeUnit.SECONDS).isEmpty(),
+                    "Operational events are readable from SQLite history.");
 
             Path report = engine.exportReport().get(5, TimeUnit.SECONDS);
             check(Files.size(report) > 100, "Situation report contains readable operational data.");
@@ -316,6 +340,83 @@ public final class InvariantSuite {
             check(new SnapshotStore().load(paths.saves().resolve("last-session.bws")).tick()
                             == engine.snapshot().tick(),
                     "Automatically saved state can be restored by the persistence layer.");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void persistsJdbcHistoryAndTransactions() throws Exception {
+        Path directory = Files.createTempDirectory("basinwatch-jdbc-test-");
+        List<String> failures = new java.util.concurrent.CopyOnWriteArrayList<>();
+        DatabaseService database = new DatabaseService(directory.resolve("basinwatch.db"),
+                failures::add, ignored -> { });
+        try {
+            database.awaitReady(5, TimeUnit.SECONDS);
+            BasinModel model = new BasinModel();
+            SensorReading reading = new SensorReading(1, "JDBC-MIL", "MIL", 12.0, 1.5);
+            model.process(reading);
+            database.recordSensor(reading, model.snapshot().zone("MIL"),
+                    java.time.Instant.now(), false);
+
+            model.process(new DispatchRequest(1, "MIL", MissionType.PUMP_DEPLOYMENT));
+            MissionSnapshot active = model.snapshot().missions().get(0);
+            database.recordDispatch(active, java.time.Instant.now(), "Test mission dispatched");
+            MissionSnapshot completed = new MissionSnapshot(active.id(), active.type(),
+                    active.zoneId(), active.durationTicks(), active.durationTicks(),
+                    MissionStatus.COMPLETED, active.startedAtTick());
+            database.recordCompletion(completed, java.time.Instant.now(),
+                    "Test mission completed");
+
+            List<DatabaseHistoryEntry> sensors = database.loadHistory(DatabaseHistoryType.SENSORS)
+                    .get(5, TimeUnit.SECONDS);
+            List<DatabaseHistoryEntry> missions = database.loadHistory(DatabaseHistoryType.MISSIONS)
+                    .get(5, TimeUnit.SECONDS);
+            List<DatabaseHistoryEntry> resources = database.loadHistory(DatabaseHistoryType.RESOURCES)
+                    .get(5, TimeUnit.SECONDS);
+            List<DatabaseHistoryEntry> events = database.loadHistory(DatabaseHistoryType.EVENTS)
+                    .get(5, TimeUnit.SECONDS);
+            check(sensors.size() == 1 && sensors.get(0).details().contains("12.0 mm rain"),
+                    "Prepared sensor insert can be selected and mapped to history: " + sensors);
+            check(missions.size() == 1 && missions.get(0).category().contains("COMPLETED"),
+                    "Mission insert and transactional status update persist.");
+            check(resources.size() == MissionType.PUMP_DEPLOYMENT.requirements().size(),
+                    "Mission dispatch records every allocated resource in its transaction.");
+            check(events.size() == 2,
+                    "Mission dispatch and completion events commit with mission changes.");
+            check(database.pruneSensorHistory(java.time.Instant.now().plusSeconds(1))
+                            .get(5, TimeUnit.SECONDS) == 1,
+                    "Sensor-history retention uses a parameterized DELETE.");
+            check(database.loadHistory(DatabaseHistoryType.SENSORS)
+                            .get(5, TimeUnit.SECONDS).isEmpty(),
+                    "Deleted sensor history is no longer returned by SELECT.");
+            check(failures.isEmpty(), "Successful JDBC operations do not report database failures.");
+        } finally {
+            database.close();
+            deleteTree(directory);
+        }
+    }
+
+    private void continuesWhenDatabaseIsUnavailable() throws Exception {
+        Path root = Files.createTempDirectory("basinwatch-db-unavailable-");
+        try {
+            AppPaths paths = AppPaths.create(root);
+            Files.createDirectory(paths.database());
+            BasinEngine engine = new BasinEngine(paths, new BasinModel());
+            engine.settings().setIntervalMillis(350);
+            engine.start().get(5, TimeUnit.SECONDS);
+            await(() -> engine.diagnostics().processedEvents() >= 6,
+                    Duration.ofSeconds(5),
+                    "Simulation continues processing when SQLite cannot open its path.");
+            engine.closeAsync().get(20, TimeUnit.SECONDS);
+            check(Files.isRegularFile(paths.archive().resolve("sensors.bin")),
+                    "File-based sensor archive still flushes when the database is unavailable.");
+            check(Files.isRegularFile(paths.saves().resolve("last-session.bws")),
+                    "Automatic session save still works when the database is unavailable.");
+            check(Files.size(paths.logs().resolve("operations.log")) > 0,
+                    "Operational file journal remains active during a database failure.");
+            check(Files.readString(paths.logs().resolve("operations.log"))
+                            .contains("DATABASE WARNING"),
+                    "Database failures are explicitly reported to the operational journal.");
         } finally {
             deleteTree(root);
         }

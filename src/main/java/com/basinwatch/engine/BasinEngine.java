@@ -5,9 +5,15 @@ import com.basinwatch.domain.BasinEvent;
 import com.basinwatch.domain.BasinModel;
 import com.basinwatch.domain.BasinSnapshot;
 import com.basinwatch.domain.DispatchRequest;
+import com.basinwatch.domain.MissionSnapshot;
+import com.basinwatch.domain.MissionStatus;
 import com.basinwatch.domain.MissionType;
 import com.basinwatch.domain.SensorReading;
 import com.basinwatch.domain.SimulationPulse;
+import com.basinwatch.domain.ZoneSnapshot;
+import com.basinwatch.db.DatabaseHistoryEntry;
+import com.basinwatch.db.DatabaseHistoryType;
+import com.basinwatch.db.DatabaseService;
 import com.basinwatch.io.AppPaths;
 import com.basinwatch.io.OperationalJournal;
 import com.basinwatch.io.ReportWriter;
@@ -41,9 +47,12 @@ public final class BasinEngine implements AutoCloseable {
     private final SnapshotStore snapshotStore = new SnapshotStore();
     private final OperationalJournal journal;
     private final AtomicLong tickSequence;
+    private final DatabaseService databaseService;
     private final CopyOnWriteArrayList<Consumer<BasinSnapshot>> snapshotListeners =
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Consumer<String>> statusListeners =
+            new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Consumer<String>> databaseStatusListeners =
             new CopyOnWriteArrayList<>();
     private final ExecutorService controls;
     private final List<Thread> responseThreads = new ArrayList<>();
@@ -70,6 +79,8 @@ public final class BasinEngine implements AutoCloseable {
         };
         this.controls = Executors.newSingleThreadExecutor(factory);
         appendJournal("SYSTEM", "BasinWatch opened");
+        this.databaseService = new DatabaseService(paths.database(),
+                this::reportDatabaseFailure, this::databaseStatusChanged);
     }
 
     public SimulationSettings settings() {
@@ -86,6 +97,27 @@ public final class BasinEngine implements AutoCloseable {
 
     public void addStatusListener(Consumer<String> listener) {
         statusListeners.add(listener);
+    }
+
+    public void addDatabaseStatusListener(Consumer<String> listener) {
+        databaseStatusListeners.add(listener);
+    }
+
+    public String databaseStatus() {
+        return databaseService.status();
+    }
+
+    public int queuedDatabaseOperations() {
+        return databaseService.queuedOperations();
+    }
+
+    public CompletableFuture<List<DatabaseHistoryEntry>> loadDatabaseHistory(
+            DatabaseHistoryType type) {
+        return databaseService.loadHistory(type);
+    }
+
+    public void awaitDatabaseReady(long timeout, TimeUnit unit) throws InterruptedException {
+        databaseService.awaitReady(timeout, unit);
     }
 
     public CompletableFuture<Void> start() {
@@ -363,6 +395,12 @@ public final class BasinEngine implements AutoCloseable {
             }
             throw failure;
         }
+        try {
+            databaseService.close();
+        } catch (IOException ex) {
+            reportDatabaseFailure("Could not flush the optional database history on exit: "
+                    + ex.getMessage());
+        }
         if (failure == null) {
             try {
                 snapshotStore.save(paths.saves().resolve("last-session.bws"), model.snapshot());
@@ -401,7 +439,14 @@ public final class BasinEngine implements AutoCloseable {
     }
 
     private void process(BasinEvent event) throws IOException, InterruptedException {
-        List<String> messages = model.process(event);
+        BasinSnapshot before;
+        BasinSnapshot after;
+        List<String> messages;
+        synchronized (model) {
+            before = model.snapshot();
+            messages = model.process(event);
+            after = model.snapshot();
+        }
         IOException journalFailure = null;
         for (String message : messages) {
             ActivityEntry entry = new ActivityEntry(Instant.now(), event.category(), message);
@@ -418,10 +463,42 @@ public final class BasinEngine implements AutoCloseable {
         if (event instanceof SensorReading reading && archiveWorker != null) {
             archiveWorker.submit(reading);
         }
+        persistDatabase(event, before, after, messages);
         processedEvents.incrementAndGet();
         publishSnapshot();
         if (journalFailure != null) {
             throw journalFailure;
+        }
+    }
+
+    private void persistDatabase(BasinEvent event, BasinSnapshot before, BasinSnapshot after,
+                                 List<String> messages) {
+        Instant timestamp = Instant.now();
+        if (event instanceof SensorReading reading) {
+            ZoneSnapshot previous = before.zone(reading.zoneId());
+            ZoneSnapshot current = after.zone(reading.zoneId());
+            if (current.lastReadingTick() == reading.tick()
+                    && current.lastReadingTick() > previous.lastReadingTick()) {
+                databaseService.recordSensor(reading, current, timestamp,
+                        current.risk().rank() > previous.risk().rank());
+            }
+        }
+        for (MissionSnapshot mission : after.missions()) {
+            MissionSnapshot previous = before.missions().stream()
+                    .filter(candidate -> candidate.id().equals(mission.id()))
+                    .findFirst()
+                    .orElse(null);
+            if (previous == null) {
+                String message = messages.stream()
+                        .filter(value -> value.startsWith(mission.id()))
+                        .findFirst()
+                        .orElse(mission.type().label() + " dispatched · " + mission.zoneId());
+                databaseService.recordDispatch(mission, timestamp, message);
+            } else if (previous.status() != mission.status()
+                    && mission.status() == MissionStatus.COMPLETED) {
+                String message = mission.type().label() + " complete · " + mission.zoneId();
+                databaseService.recordCompletion(mission, timestamp, message);
+            }
         }
     }
 
@@ -446,6 +523,16 @@ public final class BasinEngine implements AutoCloseable {
         lastError = message;
         status = "Attention · " + message;
         statusListeners.forEach(listener -> listener.accept(status));
+    }
+
+    private void reportDatabaseFailure(String message) {
+        model.recordSystemEvent("DATABASE WARNING", message);
+        appendJournal("DATABASE WARNING", message);
+    }
+
+    private void databaseStatusChanged(String message) {
+        databaseStatusListeners.forEach(listener -> listener.accept(message));
+        statusListeners.forEach(listener -> listener.accept(message));
     }
 
     private void setStatus(String message) {

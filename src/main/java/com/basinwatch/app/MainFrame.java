@@ -232,6 +232,7 @@ public final class MainFrame extends JFrame {
         operations.addTab("Operations", buildMissionsPanel());
         operations.addTab("Insights", buildInspectorPanel());
         operations.addTab("Learn", buildLearningPanel());
+        operations.addTab("Database history", new DatabaseHistoryPanel(engine));
         operations.setPreferredSize(new Dimension(425, 550));
         JPanel rightWrap = new JPanel(new BorderLayout());
         rightWrap.setOpaque(false);

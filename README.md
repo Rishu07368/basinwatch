@@ -14,7 +14,7 @@
 
 ## Run
 
-Requirements for a developer build: JDK 17 or newer and Maven 3.8 or newer. The interface uses standard Swing; no JavaFX runtime, external service, database, or network connection is required.
+Requirements for a developer build: JDK 17 or newer and Maven 3.8 or newer. The interface uses standard Swing; no JavaFX runtime, external service, database server, or network connection is required. BasinWatch uses a local SQLite database through raw JDBC as an optional additional history store.
 
 From this directory:
 
@@ -23,7 +23,7 @@ mvn package
 java -jar target\basinwatch-1.0.0.jar
 ```
 
-The first launch creates `data\logs`, `data\archive`, `data\saves`, and `data\reports` under the user's BasinWatch data folder (`%APPDATA%\BasinWatch` on Windows, `~/.basinwatch` elsewhere). A user-selected save can be loaded after relaunch. To select another writable location, start the app with `--data-dir "D:\BasinWatch Data"`.
+The first launch creates `data\logs`, `data\archive`, `data\saves`, and `data\reports` under the user's BasinWatch data folder (`%APPDATA%\BasinWatch` on Windows, `~/.basinwatch` elsewhere). It also creates `data\basinwatch.db` for SQLite history; if SQLite is unavailable, the simulation and file-based saves continue. A user-selected save can be loaded after relaunch. To select another writable location, start the app with `--data-dir "D:\BasinWatch Data"`.
 
 ## Deploy to another Windows PC
 
@@ -49,6 +49,7 @@ Persistence uses:
 - UTF-8 `BufferedWriter` operational logs and reports.
 - A `BufferedOutputStream`/`DataOutputStream` archive for typed sensor measurements.
 - A validated, versioned `SessionSnapshot` serialized to a temporary file and atomically replaced where supported. Runtime locks, threads, and Swing objects are excluded and recreated after load.
+- An additional local SQLite history database, written through a single-threaded JDBC service; the existing archive, journal, reports, and session snapshots remain unchanged.
 - `File` metadata for listing saves and displaying file sizes.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for lifecycles, lock rules, error boundaries, and tests. See [PROJECT_CONCEPT_MAP.md](PROJECT_CONCEPT_MAP.md) for the syllabus-to-feature mapping, and [PROJECT_CONCEPTS.md](PROJECT_CONCEPTS.md) for the domain shortlist and selection analysis.
@@ -59,6 +60,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for lifecycles, lock rules, error boundar
 - Encapsulated domain aggregates, immutable event/snapshot values, enums for bounded domain states, and meaningful polymorphic events.
 - `Thread`, `Runnable`, interruption/join, piped streams, bounded producer-consumer communication, monitors, synchronization, and optional priority experiments.
 - Byte/character streams, buffering, data streams, byte-array streams, file metadata, object serialization, and explicit exception handling.
+- JDBC `Connection`, `PreparedStatement`, `ResultSet`, `SQLException`, parameterized `INSERT`/`SELECT`/`UPDATE`/`DELETE`, and transactions for mission dispatch/completion.
 
 ## Build and test
 
@@ -67,7 +69,7 @@ mvn package
 .\scripts\test.ps1
 ```
 
-The test runner compiles and executes dependency-free invariant tests with assertions enabled. Tests exercise concurrent resource contention, buffer waiting/closure, event processing, persistence round-trip and failure cases, and orderly shutdown.
+The test runner compiles and executes invariant tests with assertions enabled and the SQLite JDBC runtime on its classpath. Tests exercise concurrent resource contention, buffer waiting/closure, event processing, file persistence, database schema and history operations, mission transactions, database-unavailable behavior, and orderly shutdown.
 
 ## Project layout
 
@@ -77,10 +79,11 @@ src/main/java/com/basinwatch/
   domain/       Basin, zones, events, resources and missions
   engine/       Sensor feed, intake, event buffer, workers and lifecycle
   io/           Snapshot persistence, binary archive, logs and reports
+  db/           SQLite connection management, schema and JDBC repositories
   learning/     Optional architecture inspector content
 src/test/java/  Dependency-free application/core invariant tests
 scripts/        Local test runner
-user data/      %APPDATA%\BasinWatch\data on Windows
+user data/      %APPDATA%\BasinWatch\data on Windows (including basinwatch.db)
 ```
 
 ## Known limitations
