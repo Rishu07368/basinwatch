@@ -40,7 +40,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for step-by-step instructions to build and di
 
 ## Architecture
 
-The Swing event-dispatch thread exclusively owns the UI. A dedicated `SensorFeed` thread writes observation records through connected piped character streams. An intake task validates and places them into a bounded producer-consumer buffer. A small worker set handles accepted events and progresses independent response work. `wait()`/`notifyAll()` coordinate work availability; synchronized resource reservation protects genuinely shared finite inventory. Workers publish immutable snapshots to the Swing event queue.
+The Swing event-dispatch thread exclusively owns the UI. A dedicated `SensorFeed` thread writes observation records through connected piped character streams. An intake task validates and places them into a bounded producer-consumer buffer. One response worker applies state-changing events in accepted FIFO order; independent archive and SQLite work remains asynchronous. `wait()`/`notifyAll()` coordinate work availability; synchronized resource reservation protects genuinely shared finite inventory. The engine gates submissions during snapshot/restore, drains accepted events, and publishes immutable snapshots to the Swing event queue.
 
 The resource allocator uses one short critical section and a stable acquisition policy; normal operation does not intentionally deadlock. Severity ordering is explicit domain data, not a thread-priority assumption. The optional Systems Inspector reports worker states and queue metrics, and an optional experiment can alter feed/worker settings without changing core correctness.
 
@@ -69,7 +69,7 @@ mvn package
 .\scripts\test.ps1
 ```
 
-The test runner compiles and executes invariant tests with assertions enabled and the SQLite JDBC runtime on its classpath. Tests exercise concurrent resource contention, buffer waiting/closure, event processing, file persistence, database schema and history operations, mission transactions, database-unavailable behavior, and orderly shutdown.
+The test runner compiles and executes invariant tests with assertions enabled and the SQLite JDBC runtime on its classpath. Tests exercise concurrent resource contention, bounded-buffer waiting/draining/closure, accepted event ordering, snapshot barriers and failure recovery, file persistence, database schema/history and pending-write flushing, mission transactions, database-unavailable behavior, and orderly shutdown.
 
 ## Project layout
 

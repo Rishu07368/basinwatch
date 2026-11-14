@@ -10,11 +10,16 @@ import java.util.function.Consumer;
 
 public final class SensorIntake implements Runnable {
     private final BufferedReader source;
-    private final EventBuffer destination;
+    private final EventSubmitter destination;
     private final Consumer<String> warningReporter;
     private final Consumer<String> acceptedReporter;
 
     public SensorIntake(BufferedReader source, EventBuffer destination,
+                        Consumer<String> warningReporter, Consumer<String> acceptedReporter) {
+        this(source, destination::put, warningReporter, acceptedReporter);
+    }
+
+    public SensorIntake(BufferedReader source, EventSubmitter destination,
                         Consumer<String> warningReporter, Consumer<String> acceptedReporter) {
         this.source = source;
         this.destination = destination;
@@ -39,7 +44,7 @@ public final class SensorIntake implements Runnable {
                     continue;
                 }
                 try {
-                    if (!destination.put(event)) {
+                    if (!destination.submit(event)) {
                         return;
                     }
                 } catch (InterruptedException ex) {
@@ -51,5 +56,10 @@ public final class SensorIntake implements Runnable {
         } catch (IOException ex) {
             warningReporter.accept("Sensor intake ended with an I/O error: " + ex.getMessage());
         }
+    }
+
+    @FunctionalInterface
+    public interface EventSubmitter {
+        boolean submit(BasinEvent event) throws InterruptedException;
     }
 }

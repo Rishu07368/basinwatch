@@ -14,6 +14,7 @@ import com.basinwatch.engine.BasinEngine;
 import com.basinwatch.engine.EventBuffer;
 import com.basinwatch.db.DatabaseHistoryEntry;
 import com.basinwatch.db.DatabaseHistoryType;
+import com.basinwatch.db.DatabaseManager;
 import com.basinwatch.db.DatabaseService;
 import com.basinwatch.io.AppPaths;
 import com.basinwatch.io.SaveCatalog;
@@ -194,6 +195,15 @@ public final class InvariantSuite {
         waiter.join(2_000);
         check(!waiter.isAlive() && endOfQueue.get() == 1,
                 "Closing the queue wakes waiters with an explicit end-of-stream result.");
+
+        EventBuffer inFlight = new EventBuffer(1);
+        inFlight.put(new SimulationPulse(4));
+        inFlight.take();
+        check(!inFlight.awaitDrained(20, TimeUnit.MILLISECONDS),
+                "A dequeued event remains in-flight until its consumer completes it.");
+        inFlight.complete();
+        check(inFlight.awaitDrained(1, TimeUnit.SECONDS),
+                "The drain condition wakes when accepted work is complete.");
     }
 
     private void advancesAndReleasesResponseMissions() {
@@ -277,69 +287,120 @@ public final class InvariantSuite {
         Path root = Files.createTempDirectory("basinwatch-engine-test-");
         try {
             AppPaths paths = AppPaths.create(root);
-            BasinEngine engine = new BasinEngine(paths, new BasinModel());
-            engine.settings().setIntervalMillis(350);
-            engine.start().get(5, TimeUnit.SECONDS);
-            await(() -> engine.diagnostics().processedEvents() >= 7, Duration.ofSeconds(5),
-                    "Sensor feed, pipe intake, and response workers process real events.");
-            Path liveSave = paths.saves().resolve("live-session.bws");
-            engine.save(liveSave).get(8, TimeUnit.SECONDS);
-            check(Files.isRegularFile(liveSave), "Live save reaches disk after accepted events drain.");
-            check(engine.diagnostics().threads().stream()
-                            .anyMatch(thread -> thread.name().equals("basin-sensor-feed") && thread.alive()),
-                    "A save made during live observations resumes the feed afterwards.");
-            engine.pause().get(8, TimeUnit.SECONDS);
-            await(() -> engine.diagnostics().queuedEvents() == 0
-                            && engine.diagnostics().activeEvents() == 0,
-                    Duration.ofSeconds(5), "Paused event pipeline drains accepted observations.");
-            check(engine.snapshot().tick() > 0, "Live simulation advances the basin clock.");
-            check(!engine.loadDatabaseHistory(DatabaseHistoryType.SENSORS)
-                            .get(5, TimeUnit.SECONDS).isEmpty(),
-                    "Processed observations are available from asynchronous JDBC history.");
+            try (BasinEngine engine = new BasinEngine(paths, new BasinModel())) {
+                engine.settings().setIntervalMillis(350);
+                engine.start().get(5, TimeUnit.SECONDS);
+                check(engine.diagnostics().threads().stream()
+                                .filter(thread -> thread.name().startsWith("basin-response-")).count() == 1,
+                        "One response worker applies state-changing events in buffer order.");
+                await(() -> engine.diagnostics().processedEvents() >= 7, Duration.ofSeconds(5),
+                        "Sensor feed, pipe intake, and response workers process real events.");
+                Path liveSave = paths.saves().resolve("live-session.bws");
+                engine.save(liveSave).get(8, TimeUnit.SECONDS);
+                check(Files.isRegularFile(liveSave),
+                        "Live save reaches disk after accepted events drain.");
+                check(engine.diagnostics().threads().stream()
+                                .anyMatch(thread -> thread.name().equals("basin-sensor-feed")
+                                        && thread.alive()),
+                        "A save made during live observations resumes the feed afterwards.");
+                try {
+                    engine.save(paths.saves()).get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("Saving over a directory must be rejected.");
+                } catch (java.util.concurrent.ExecutionException ex) {
+                    check(ex.getCause() instanceof IOException,
+                            "A failed save reports its underlying I/O problem.");
+                }
+                check(engine.diagnostics().threads().stream()
+                                .anyMatch(thread -> thread.name().equals("basin-sensor-feed")
+                                        && thread.alive()),
+                        "A failed save releases the submission barrier and restarts the feed.");
+                try {
+                    engine.load(root.resolve("missing-session.bws")).get(5, TimeUnit.SECONDS);
+                    throw new AssertionError("A missing session save must be rejected.");
+                } catch (java.util.concurrent.ExecutionException ex) {
+                    check(ex.getCause() instanceof IOException,
+                            "A failed restore reports the underlying I/O problem.");
+                }
+                check(engine.diagnostics().threads().stream()
+                                .anyMatch(thread -> thread.name().equals("basin-sensor-feed")
+                                        && thread.alive()),
+                        "A failed restore resumes observations that were previously live.");
+                engine.pause().get(8, TimeUnit.SECONDS);
+                await(() -> engine.diagnostics().queuedEvents() == 0
+                                && engine.diagnostics().activeEvents() == 0,
+                        Duration.ofSeconds(5),
+                        "Paused event pipeline drains accepted observations.");
+                check(engine.snapshot().tick() > 0, "Live simulation advances the basin clock.");
+                int activityBeforeStep = engine.snapshot().activity().size();
+                check(engine.step(), "A manual interval is accepted as one ordered event batch.");
+                await(() -> engine.diagnostics().queuedEvents() == 0
+                                && engine.diagnostics().activeEvents() == 0,
+                        Duration.ofSeconds(5), "The manual interval finishes processing.");
+                List<com.basinwatch.domain.ActivityEntry> steppedActivity =
+                        engine.snapshot().activity().subList(activityBeforeStep,
+                                engine.snapshot().activity().size());
+                check(steppedActivity.size() == 7
+                                && steppedActivity.subList(0, 6).stream()
+                                .allMatch(entry -> entry.category().equals("SENSOR")
+                                        || entry.category().equals("RISK UPDATE"))
+                                && steppedActivity.get(6).message().startsWith("Simulation interval"),
+                        "All six zone readings are applied before the interval pulse: "
+                                + steppedActivity);
+                check(!engine.loadDatabaseHistory(DatabaseHistoryType.SENSORS)
+                                .get(5, TimeUnit.SECONDS).isEmpty(),
+                        "Processed observations are available from asynchronous JDBC history.");
 
-            check(engine.dispatch("MIL", MissionType.PUMP_DEPLOYMENT),
-                    "Dispatch is accepted into the bounded event queue.");
-            await(() -> engine.snapshot().missions().stream()
-                            .anyMatch(mission -> mission.status() == MissionStatus.ACTIVE),
-                    Duration.ofSeconds(3), "A response worker allocates and starts a requested mission.");
-            Path namedSave = paths.saves().resolve("test-session.bws");
-            engine.save(namedSave).get(5, TimeUnit.SECONDS);
-            long savedTick = engine.snapshot().tick();
-            engine.load(namedSave).get(8, TimeUnit.SECONDS);
-            check(engine.snapshot().tick() == savedTick, "Engine loads a consistent saved session.");
-            engine.start().get(5, TimeUnit.SECONDS);
-            await(() -> engine.snapshot().missions().stream()
-                            .anyMatch(mission -> mission.status() == MissionStatus.COMPLETED),
-                    Duration.ofSeconds(8), "A persisted mission completes through the existing simulation.");
-            engine.pause().get(8, TimeUnit.SECONDS);
-            check(engine.loadDatabaseHistory(DatabaseHistoryType.MISSIONS)
-                            .get(5, TimeUnit.SECONDS).stream()
-                            .anyMatch(entry -> entry.category().contains("COMPLETED")),
-                    "Mission lifecycle updates persist after completion.");
-            check(!engine.loadDatabaseHistory(DatabaseHistoryType.RESOURCES)
-                            .get(5, TimeUnit.SECONDS).isEmpty(),
-                    "Mission resource allocations are persisted with their mission.");
-            check(!engine.loadDatabaseHistory(DatabaseHistoryType.EVENTS)
-                            .get(5, TimeUnit.SECONDS).isEmpty(),
-                    "Operational events are readable from SQLite history.");
+                check(engine.dispatch("MIL", MissionType.PUMP_DEPLOYMENT),
+                        "Dispatch is accepted into the bounded event queue.");
+                await(() -> engine.snapshot().missions().stream()
+                                .anyMatch(mission -> mission.status() == MissionStatus.ACTIVE),
+                        Duration.ofSeconds(3),
+                        "A response worker allocates and starts a requested mission.");
+                Path namedSave = paths.saves().resolve("test-session.bws");
+                engine.save(namedSave).get(5, TimeUnit.SECONDS);
+                long savedTick = engine.snapshot().tick();
+                engine.load(namedSave).get(8, TimeUnit.SECONDS);
+                check(engine.snapshot().tick() == savedTick,
+                        "Engine loads a consistent saved session.");
+                engine.start().get(5, TimeUnit.SECONDS);
+                await(() -> engine.snapshot().missions().stream()
+                                .anyMatch(mission -> mission.status() == MissionStatus.COMPLETED),
+                        Duration.ofSeconds(8),
+                        "A persisted mission completes through the existing simulation.");
+                engine.pause().get(8, TimeUnit.SECONDS);
+                check(engine.loadDatabaseHistory(DatabaseHistoryType.MISSIONS)
+                                .get(5, TimeUnit.SECONDS).stream()
+                                .anyMatch(entry -> entry.category().contains("COMPLETED")),
+                        "Mission lifecycle updates persist after completion.");
+                check(!engine.loadDatabaseHistory(DatabaseHistoryType.RESOURCES)
+                                .get(5, TimeUnit.SECONDS).isEmpty(),
+                        "Mission resource allocations are persisted with their mission.");
+                check(!engine.loadDatabaseHistory(DatabaseHistoryType.EVENTS)
+                                .get(5, TimeUnit.SECONDS).isEmpty(),
+                        "Operational events are readable from SQLite history.");
 
-            Path report = engine.exportReport().get(5, TimeUnit.SECONDS);
-            check(Files.size(report) > 100, "Situation report contains readable operational data.");
-            engine.closeAsync().get(20, TimeUnit.SECONDS);
-            check(Files.isRegularFile(paths.saves().resolve("last-session.bws")),
-                    "Clean shutdown automatically saves a resumable session.");
-            check(Files.size(paths.logs().resolve("operations.log")) > 0,
-                    "Operational events are retained in the text journal.");
-            try (DataInputStream archive = new DataInputStream(new BufferedInputStream(
-                    Files.newInputStream(paths.archive().resolve("sensors.bin"))))) {
-                check(archive.readInt() == 0x42574152, "Binary sensor archive contains its format marker.");
-                check(archive.readInt() == 1, "Binary sensor archive records its format version.");
-                check(archive.readLong() > 0, "Binary archive contains typed sensor records.");
+                Path report = engine.exportReport().get(5, TimeUnit.SECONDS);
+                check(Files.size(report) > 100,
+                        "Situation report contains readable operational data.");
+                engine.closeAsync().get(20, TimeUnit.SECONDS);
+                check(Files.isRegularFile(paths.saves().resolve("last-session.bws")),
+                        "Clean shutdown automatically saves a resumable session.");
+                check(Files.size(paths.logs().resolve("operations.log")) > 0,
+                        "Operational events are retained in the text journal.");
+                try (DataInputStream archive = new DataInputStream(new BufferedInputStream(
+                        Files.newInputStream(paths.archive().resolve("sensors.bin"))))) {
+                    check(archive.readInt() == 0x42574152,
+                            "Binary sensor archive contains its format marker.");
+                    check(archive.readInt() == 1,
+                            "Binary sensor archive records its format version.");
+                    check(archive.readLong() > 0,
+                            "Binary archive contains typed sensor records.");
+                }
+
+                check(new SnapshotStore().load(paths.saves().resolve("last-session.bws")).tick()
+                                == engine.snapshot().tick(),
+                        "Automatically saved state can be restored by the persistence layer.");
             }
-
-            check(new SnapshotStore().load(paths.saves().resolve("last-session.bws")).tick()
-                            == engine.snapshot().tick(),
-                    "Automatically saved state can be restored by the persistence layer.");
         } finally {
             deleteTree(root);
         }
@@ -348,7 +409,8 @@ public final class InvariantSuite {
     private void persistsJdbcHistoryAndTransactions() throws Exception {
         Path directory = Files.createTempDirectory("basinwatch-jdbc-test-");
         List<String> failures = new java.util.concurrent.CopyOnWriteArrayList<>();
-        DatabaseService database = new DatabaseService(directory.resolve("basinwatch.db"),
+        Path databasePath = directory.resolve("basinwatch.db");
+        DatabaseService database = new DatabaseService(databasePath,
                 failures::add, ignored -> { });
         try {
             database.awaitReady(5, TimeUnit.SECONDS);
@@ -390,6 +452,19 @@ public final class InvariantSuite {
                             .get(5, TimeUnit.SECONDS).isEmpty(),
                     "Deleted sensor history is no longer returned by SELECT.");
             check(failures.isEmpty(), "Successful JDBC operations do not report database failures.");
+            for (int index = 0; index < 32; index++) {
+                SensorReading pending = new SensorReading(index + 2, "FLUSH-MIL", "MIL", 1, 0.2);
+                database.recordSensor(pending, model.snapshot().zone("MIL"),
+                        java.time.Instant.now(), false);
+            }
+            database.close();
+            try (java.sql.Connection connection = new DatabaseManager(databasePath).openConnection();
+                 java.sql.PreparedStatement statement = connection.prepareStatement(
+                         "SELECT COUNT(*) FROM sensor_readings");
+                 java.sql.ResultSet results = statement.executeQuery()) {
+                check(results.next() && results.getInt(1) == 32,
+                        "Database shutdown flushes all accepted writes before returning.");
+            }
         } finally {
             database.close();
             deleteTree(directory);

@@ -36,13 +36,15 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public final class BasinEngine implements AutoCloseable {
-    private static final int WORKER_COUNT = 3;
+    private static final int WORKER_COUNT = 1;
     private static final long JOIN_TIMEOUT_MILLIS = 8_000;
 
     private final AppPaths paths;
     private final EventBuffer eventBuffer = new EventBuffer(96);
+    private final ReentrantReadWriteLock submissionLock = new ReentrantReadWriteLock(true);
     private final SimulationSettings settings = new SimulationSettings();
     private final SnapshotStore snapshotStore = new SnapshotStore();
     private final OperationalJournal journal;
@@ -63,6 +65,7 @@ public final class BasinEngine implements AutoCloseable {
     private volatile PipedWriter feedWriter;
     private volatile ArchiveWorker archiveWorker;
     private volatile boolean started;
+    private volatile boolean closing;
     private volatile boolean closed;
     private volatile String status = "Ready · observations paused";
     private volatile String lastError = "";
@@ -152,31 +155,46 @@ public final class BasinEngine implements AutoCloseable {
     }
 
     public boolean dispatch(String zoneId, MissionType missionType) {
-        ensureOpen();
-        return eventBuffer.offerAll(List.of(
-                new DispatchRequest(model.currentTick(), zoneId, missionType)));
+        submissionLock.readLock().lock();
+        try {
+            ensureOpen();
+            return eventBuffer.offerAll(List.of(
+                    new DispatchRequest(model.currentTick(), zoneId, missionType)));
+        } finally {
+            submissionLock.readLock().unlock();
+        }
     }
 
     public boolean injectStorm(String zoneId) {
-        ensureOpen();
-        long tick = tickSequence.incrementAndGet();
-        SensorReading reading = new SensorReading(tick, "OPERATOR-STORM-" + zoneId,
-                zoneId, 46.0, 11.0);
-        return eventBuffer.offerAll(List.of(reading));
+        submissionLock.readLock().lock();
+        try {
+            ensureOpen();
+            long tick = tickSequence.incrementAndGet();
+            SensorReading reading = new SensorReading(tick, "OPERATOR-STORM-" + zoneId,
+                    zoneId, 46.0, 11.0);
+            return eventBuffer.offerAll(List.of(reading));
+        } finally {
+            submissionLock.readLock().unlock();
+        }
     }
 
     public boolean step() {
-        ensureOpen();
-        long tick = tickSequence.incrementAndGet();
-        List<BasinEvent> events = new ArrayList<>();
-        String[] zones = {"UPR", "MIL", "NOR", "OLD", "MAR", "SOU"};
-        for (int index = 0; index < zones.length; index++) {
-            double rainfall = (4.0 + index * 2.3) * settings.stormIntensity();
-            events.add(new SensorReading(tick, "MANUAL-" + zones[index], zones[index],
-                    rainfall, 0.7 + index * 0.18));
+        submissionLock.readLock().lock();
+        try {
+            ensureOpen();
+            long tick = tickSequence.incrementAndGet();
+            List<BasinEvent> events = new ArrayList<>();
+            String[] zones = {"UPR", "MIL", "NOR", "OLD", "MAR", "SOU"};
+            for (int index = 0; index < zones.length; index++) {
+                double rainfall = (4.0 + index * 2.3) * settings.stormIntensity();
+                events.add(new SensorReading(tick, "MANUAL-" + zones[index], zones[index],
+                        rainfall, 0.7 + index * 0.18));
+            }
+            events.add(new SimulationPulse(tick));
+            return eventBuffer.offerAll(events);
+        } finally {
+            submissionLock.readLock().unlock();
         }
-        events.add(new SimulationPulse(tick));
-        return eventBuffer.offerAll(events);
     }
 
     public CompletableFuture<Path> exportReport() {
@@ -192,12 +210,16 @@ public final class BasinEngine implements AutoCloseable {
                 stopFeed();
             }
             try {
-                awaitQuiescent();
-                snapshotStore.save(path, model.snapshot());
-                model.recordSystemEvent("SAVE", "Session saved · " + path.getFileName());
-                appendJournal("SAVE", "Session saved · " + path.toAbsolutePath());
-                publishSnapshot();
-                setStatus("Session saved · " + path.getFileName());
+                acquireSubmissionBarrier();
+                try {
+                    snapshotStore.save(path, model.snapshot());
+                    model.recordSystemEvent("SAVE", "Session saved · " + path.getFileName());
+                    appendJournal("SAVE", "Session saved · " + path.toAbsolutePath());
+                    publishSnapshot();
+                    setStatus("Session saved · " + path.getFileName());
+                } finally {
+                    submissionLock.writeLock().unlock();
+                }
             } finally {
                 if (resumeFeed && !closed) {
                     startFeed();
@@ -209,15 +231,31 @@ public final class BasinEngine implements AutoCloseable {
     public CompletableFuture<Void> load(Path path) {
         return submitControl(() -> {
             ensureOpen();
-            stopFeed();
-            awaitQuiescent();
-            BasinSnapshot restored = snapshotStore.load(path);
-            model = BasinModel.restore(restored);
-            tickSequence.set(restored.tick());
-            model.recordSystemEvent("RESTORE", "Session restored · " + path.getFileName());
-            appendJournal("RESTORE", "Session restored · " + path.toAbsolutePath());
-            publishSnapshot();
-            setStatus("Session restored · " + path.getFileName());
+            boolean resumeFeed = sensorFeed != null && sensorFeed.isAlive();
+            try {
+                stopFeed();
+                acquireSubmissionBarrier();
+                try {
+                    BasinSnapshot restored = snapshotStore.load(path);
+                    model = BasinModel.restore(restored);
+                    tickSequence.set(restored.tick());
+                    model.recordSystemEvent("RESTORE", "Session restored · " + path.getFileName());
+                    appendJournal("RESTORE", "Session restored · " + path.toAbsolutePath());
+                    publishSnapshot();
+                    setStatus("Session restored · " + path.getFileName());
+                } finally {
+                    submissionLock.writeLock().unlock();
+                }
+            } catch (IOException | RuntimeException ex) {
+                if (resumeFeed && !closed) {
+                    try {
+                        startFeed();
+                    } catch (IOException resumeFailure) {
+                        ex.addSuppressed(resumeFailure);
+                    }
+                }
+                throw ex;
+            }
         });
     }
 
@@ -290,7 +328,7 @@ public final class BasinEngine implements AutoCloseable {
         }
         feedWriter = writer;
         intakeThread = new Thread(new SensorIntake(
-                new BufferedReader(reader), eventBuffer, this::reportFailure,
+                new BufferedReader(reader), this::submitEvent, this::reportFailure,
                 ignored -> publishDiagnosticsStatus()), "basin-sensor-intake");
         sensorFeed = new SensorFeed(writer, List.of("UPR", "MIL", "NOR", "OLD", "MAR", "SOU"),
                 settings, tickSequence, this::reportFailure);
@@ -347,6 +385,7 @@ public final class BasinEngine implements AutoCloseable {
         } catch (IOException ex) {
             failure = ex;
         }
+        closing = true;
         eventBuffer.close();
         List<Thread> workers;
         synchronized (responseThreads) {
@@ -400,6 +439,12 @@ public final class BasinEngine implements AutoCloseable {
         } catch (IOException ex) {
             reportDatabaseFailure("Could not flush the optional database history on exit: "
                     + ex.getMessage());
+            try {
+                snapshotStore.save(paths.saves().resolve("last-session.bws"), model.snapshot());
+            } catch (IOException snapshotFailure) {
+                ex.addSuppressed(snapshotFailure);
+            }
+            throw ex;
         }
         if (failure == null) {
             try {
@@ -417,17 +462,41 @@ public final class BasinEngine implements AutoCloseable {
     }
 
     private void awaitQuiescent() throws IOException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
-        while (eventBuffer.size() > 0 || eventBuffer.activeConsumers() > 0) {
-            if (System.nanoTime() >= deadline) {
+        if (!submissionLock.isWriteLockedByCurrentThread()) {
+            throw new IllegalStateException("A submission barrier is required to drain basin work.");
+        }
+        try {
+            if (!eventBuffer.awaitDrained(8, TimeUnit.SECONDS)) {
                 throw new IOException("Pending basin work did not finish; the prior state was kept.");
             }
-            try {
-                Thread.sleep(15);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted while waiting for the current basin events.", ex);
-            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting for the current basin events.", ex);
+        }
+    }
+
+    private void acquireSubmissionBarrier() throws IOException {
+        try {
+            submissionLock.writeLock().lockInterruptibly();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while pausing new basin submissions.", ex);
+        }
+        try {
+            awaitQuiescent();
+        } catch (IOException | RuntimeException ex) {
+            submissionLock.writeLock().unlock();
+            throw ex;
+        }
+    }
+
+    private boolean submitEvent(BasinEvent event) throws InterruptedException {
+        submissionLock.readLock().lockInterruptibly();
+        try {
+            ensureOpen();
+            return eventBuffer.put(event);
+        } finally {
+            submissionLock.readLock().unlock();
         }
     }
 
@@ -541,8 +610,8 @@ public final class BasinEngine implements AutoCloseable {
     }
 
     private void ensureOpen() {
-        if (closed) {
-            throw new IllegalStateException("BasinWatch is already closed.");
+        if (closing || closed) {
+            throw new IllegalStateException("BasinWatch is closing or already closed.");
         }
     }
 
