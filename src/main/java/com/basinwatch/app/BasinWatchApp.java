@@ -23,6 +23,7 @@ public final class BasinWatchApp {
         } catch (ReflectiveOperationException | javax.swing.UnsupportedLookAndFeelException ex) {
             System.err.println("Using the standard Swing appearance: " + ex.getMessage());
         }
+        UiTheme.install();
         String[] suppliedArguments = arguments.clone();
         SwingUtilities.invokeLater(() -> openApplication(suppliedArguments));
     }

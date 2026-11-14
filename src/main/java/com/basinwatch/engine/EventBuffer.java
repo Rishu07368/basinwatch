@@ -4,6 +4,7 @@ import com.basinwatch.domain.BasinEvent;
 
 import java.util.ArrayDeque;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 public final class EventBuffer {
     private final ArrayDeque<BasinEvent> events = new ArrayDeque<>();
@@ -76,6 +77,20 @@ public final class EventBuffer {
         }
         activeConsumers--;
         notifyAll();
+    }
+
+    public synchronized boolean awaitDrained(long timeout, TimeUnit unit)
+            throws InterruptedException {
+        long remainingNanos = unit.toNanos(timeout);
+        long deadline = System.nanoTime() + remainingNanos;
+        while (!events.isEmpty() || activeConsumers > 0) {
+            if (remainingNanos <= 0) {
+                return false;
+            }
+            TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
+            remainingNanos = deadline - System.nanoTime();
+        }
+        return true;
     }
 
     public synchronized void close() {

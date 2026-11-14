@@ -126,22 +126,18 @@ public final class DatabaseService implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        if (closed) {
-            return;
+        if (!closed) {
+            closed = true;
+            executor.shutdown();
         }
-        closed = true;
-        executor.shutdown();
         try {
-            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-                if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
-                    throw new IOException("Database writer did not stop within its shutdown time limit.");
-                }
+            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                throw new IOException("Database writer did not drain within its shutdown time limit; "
+                        + executor.getQueue().size() + " operation(s) remain queued.");
             }
         } catch (InterruptedException ex) {
-            executor.shutdownNow();
             Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while stopping the database writer.", ex);
+            throw new IOException("Interrupted while waiting for the database writer to drain.", ex);
         }
     }
 

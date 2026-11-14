@@ -37,6 +37,9 @@ import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.plaf.basic.BasicButtonUI;
+import javax.swing.plaf.basic.BasicComboBoxUI;
+import javax.swing.plaf.basic.BasicTabbedPaneUI;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -54,10 +57,10 @@ import java.util.List;
 import java.util.concurrent.CompletionException;
 
 public final class MainFrame extends JFrame {
-    private static final Color INK = new Color(26, 42, 61);
-    private static final Color MUTED = new Color(100, 117, 137);
-    private static final Color BORDER = new Color(220, 228, 237);
-    private static final Color CANVAS = new Color(242, 246, 250);
+    private static final Color INK = UiTheme.TEXT;
+    private static final Color MUTED = UiTheme.MUTED;
+    private static final Color BORDER = UiTheme.BORDER;
+    private static final Color CANVAS = UiTheme.CANVAS;
 
     private final BasinEngine engine;
     private final AppPaths paths;
@@ -78,6 +81,7 @@ public final class MainFrame extends JFrame {
     private final JLabel threadSummary = new JLabel("Background services are stopped.");
     private final JLabel queueSummary = new JLabel("Queue 0 / 96");
     private final JLabel archiveSummary = new JLabel("Sensor archive idle");
+    private final JLabel[] metricValues = new JLabel[5];
     private JSplitPane workSplit;
     private JSplitPane boardSplit;
     private final JLabel[] stockLabels = new JLabel[ResourceType.values().length];
@@ -130,37 +134,37 @@ public final class MainFrame extends JFrame {
 
     private JPanel buildHeader() {
         JPanel outer = new JPanel(new BorderLayout());
-        outer.setBackground(Color.WHITE);
+        outer.setBackground(UiTheme.SURFACE);
         outer.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER));
         JPanel brand = new JPanel(new BorderLayout(12, 0));
-        brand.setBackground(Color.WHITE);
+        brand.setBackground(UiTheme.SURFACE);
         brand.setBorder(BorderFactory.createEmptyBorder(15, 23, 13, 18));
         JLabel mark = new JLabel("BW", SwingConstants.CENTER);
         mark.setOpaque(true);
-        mark.setBackground(new Color(31, 67, 91));
+        mark.setBackground(UiTheme.ACCENT_DARK);
         mark.setForeground(Color.WHITE);
         mark.setFont(new Font("Segoe UI", Font.BOLD, 17));
         mark.setPreferredSize(new Dimension(48, 46));
-        JLabel title = new JLabel("<html><b>BASINWATCH</b><br><span style='color:#718196;font-size:11px'>FLOODPLAIN OPERATIONS CONSOLE</span></html>");
+        JLabel title = new JLabel("<html><b>BASINWATCH</b><br><span style='color:#9cafc1;font-size:11px'>FLOODPLAIN OPERATIONS CONSOLE</span></html>");
         title.setForeground(INK);
         title.setFont(new Font("Segoe UI", Font.PLAIN, 15));
         brand.add(mark, BorderLayout.WEST);
         brand.add(title, BorderLayout.CENTER);
         JLabel scope = new JLabel("OFFLINE PLANNING SIMULATION");
         scope.setFont(new Font("Segoe UI", Font.BOLD, 11));
-        scope.setForeground(new Color(74, 104, 119));
+        scope.setForeground(UiTheme.ACCENT);
         scope.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(202, 220, 226)),
+                BorderFactory.createLineBorder(UiTheme.BORDER),
                 BorderFactory.createEmptyBorder(7, 10, 7, 10)));
         scope.setOpaque(true);
-        scope.setBackground(new Color(239, 247, 247));
+        scope.setBackground(UiTheme.PANEL);
         JPanel scopeWrap = new JPanel(new FlowLayout(FlowLayout.RIGHT, 18, 20));
-        scopeWrap.setBackground(Color.WHITE);
+        scopeWrap.setBackground(UiTheme.SURFACE);
         scopeWrap.add(scope);
         brand.add(scopeWrap, BorderLayout.EAST);
 
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 9));
-        toolbar.setBackground(new Color(249, 251, 253));
+        toolbar.setBackground(UiTheme.PANEL);
         toolbar.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, BORDER));
         styleButton(feedButton, true);
         styleButton(stepButton, false);
@@ -205,9 +209,10 @@ public final class MainFrame extends JFrame {
         return outer;
     }
 
-    private JSplitPane buildWorkArea() {
+    private JPanel buildWorkArea() {
         JPanel mapSection = new JPanel(new BorderLayout(0, 8));
-        mapSection.setOpaque(false);
+        mapSection.setOpaque(true);
+        mapSection.setBackground(CANVAS);
         mapSection.setBorder(BorderFactory.createEmptyBorder(17, 20, 9, 10));
         JPanel mapHeading = new JPanel(new BorderLayout());
         mapHeading.setOpaque(false);
@@ -227,6 +232,10 @@ public final class MainFrame extends JFrame {
         mapSection.add(caption, BorderLayout.SOUTH);
 
         JTabbedPane operations = new JTabbedPane();
+        operations.setUI(new BasicTabbedPaneUI());
+        operations.setOpaque(true);
+        operations.setBackground(UiTheme.SURFACE);
+        operations.setForeground(MUTED);
         operations.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         operations.addTab("Response", buildResponsePanel());
         operations.addTab("Operations", buildMissionsPanel());
@@ -235,7 +244,8 @@ public final class MainFrame extends JFrame {
         operations.addTab("Database history", new DatabaseHistoryPanel(engine));
         operations.setPreferredSize(new Dimension(425, 550));
         JPanel rightWrap = new JPanel(new BorderLayout());
-        rightWrap.setOpaque(false);
+        rightWrap.setOpaque(true);
+        rightWrap.setBackground(CANVAS);
         rightWrap.setBorder(BorderFactory.createEmptyBorder(14, 7, 9, 17));
         rightWrap.setPreferredSize(new Dimension(440, 550));
         rightWrap.setMinimumSize(new Dimension(420, 450));
@@ -243,12 +253,14 @@ public final class MainFrame extends JFrame {
 
         workSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, mapSection, rightWrap);
         workSplit.setBorder(null);
+        workSplit.setOpaque(true);
+        workSplit.setBackground(CANVAS);
         workSplit.setResizeWeight(0.62);
         workSplit.setDividerLocation(0.62);
         workSplit.setContinuousLayout(true);
 
         JPanel eventsPanel = new JPanel(new BorderLayout(12, 0));
-        eventsPanel.setBackground(Color.WHITE);
+        eventsPanel.setBackground(UiTheme.SURFACE);
         eventsPanel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, BORDER),
                 BorderFactory.createEmptyBorder(10, 20, 10, 18)));
@@ -262,7 +274,8 @@ public final class MainFrame extends JFrame {
         eventHeading.setPreferredSize(new Dimension(190, 54));
         activityList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         activityList.setFont(new Font("Consolas", Font.PLAIN, 12));
-        activityList.setForeground(new Color(51, 68, 85));
+        activityList.setForeground(INK);
+        activityList.setBackground(UiTheme.PANEL);
         activityList.setVisibleRowCount(4);
         JScrollPane activityScroll = new JScrollPane(activityList);
         activityScroll.setBorder(BorderFactory.createLineBorder(BORDER));
@@ -271,15 +284,49 @@ public final class MainFrame extends JFrame {
 
         boardSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, workSplit, eventsPanel);
         boardSplit.setBorder(null);
+        boardSplit.setOpaque(true);
+        boardSplit.setBackground(CANVAS);
         boardSplit.setResizeWeight(0.79);
         boardSplit.setDividerLocation(0.79);
         boardSplit.setContinuousLayout(true);
-        return boardSplit;
+        JPanel dashboard = new JPanel(new BorderLayout(0, 0));
+        dashboard.setBackground(CANVAS);
+        dashboard.add(buildMetrics(), BorderLayout.NORTH);
+        dashboard.add(boardSplit, BorderLayout.CENTER);
+        return dashboard;
+    }
+
+    private JPanel buildMetrics() {
+        String[] labels = {
+                "MONITORED ZONES", "CRITICAL ZONES", "ACTIVE MISSIONS",
+                "PUMPS AVAILABLE", "POPULATION EXPOSED"
+        };
+        JPanel strip = new JPanel(new GridLayout(1, labels.length, 9, 0));
+        strip.setBackground(CANVAS);
+        strip.setBorder(BorderFactory.createEmptyBorder(11, 20, 0, 20));
+        for (int index = 0; index < labels.length; index++) {
+            JPanel card = new JPanel(new BorderLayout(0, 4));
+            card.setBackground(UiTheme.SURFACE);
+            card.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(BORDER),
+                    BorderFactory.createEmptyBorder(8, 11, 8, 11)));
+            JLabel title = new JLabel(labels[index]);
+            title.setFont(new Font("Segoe UI", Font.BOLD, 10));
+            title.setForeground(MUTED);
+            JLabel value = new JLabel("—");
+            value.setFont(new Font("Segoe UI", Font.BOLD, 21));
+            value.setForeground(index == 1 ? UiTheme.CRITICAL : INK);
+            metricValues[index] = value;
+            card.add(title, BorderLayout.NORTH);
+            card.add(value, BorderLayout.CENTER);
+            strip.add(card);
+        }
+        return strip;
     }
 
     private JPanel buildResponsePanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 12));
-        panel.setBackground(Color.WHITE);
+        panel.setBackground(UiTheme.SURFACE);
         panel.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
         JPanel top = new JPanel(new BorderLayout(0, 5));
         top.setOpaque(false);
@@ -290,6 +337,11 @@ public final class MainFrame extends JFrame {
         zoneLabel.setLabelFor(zoneSelector);
         zoneLabel.setForeground(MUTED);
         zoneLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        zoneSelector.setUI(new BasicComboBoxUI());
+        zoneSelector.setOpaque(true);
+        zoneSelector.setBackground(UiTheme.ELEVATED);
+        zoneSelector.setForeground(INK);
+        zoneSelector.setSelectedItem(selectedZoneId);
         zoneSelector.getAccessibleContext().setAccessibleName("Select a flood zone");
         zoneSelector.addActionListener(event -> {
             String chosen = (String) zoneSelector.getSelectedItem();
@@ -319,8 +371,13 @@ public final class MainFrame extends JFrame {
         dispatchHint.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         dispatchHint.setBorder(BorderFactory.createEmptyBorder(0, 0, 8, 0));
         missionType.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        missionType.setUI(new BasicComboBoxUI());
+        missionType.setOpaque(true);
+        missionType.setBackground(UiTheme.ELEVATED);
+        missionType.setForeground(INK);
+        dispatchButton.setUI(new BasicButtonUI());
         dispatchButton.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        dispatchButton.setBackground(new Color(35, 85, 111));
+        dispatchButton.setBackground(UiTheme.ACCENT_DARK);
         dispatchButton.setForeground(Color.WHITE);
         dispatchButton.setOpaque(true);
         dispatchButton.setBorderPainted(false);
@@ -387,7 +444,7 @@ public final class MainFrame extends JFrame {
 
     private JPanel buildMissionsPanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 8));
-        panel.setBackground(Color.WHITE);
+        panel.setBackground(UiTheme.SURFACE);
         panel.setBorder(BorderFactory.createEmptyBorder(14, 13, 12, 13));
         JLabel heading = heading("Field operations");
         JLabel subheading = new JLabel("Assigned work advances with observation intervals.");
@@ -399,7 +456,7 @@ public final class MainFrame extends JFrame {
         top.add(subheading, BorderLayout.SOUTH);
         missionList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         missionList.setCellRenderer(new MissionRenderer());
-        missionList.setBackground(new Color(249, 251, 253));
+        missionList.setBackground(UiTheme.PANEL);
         missionList.setFixedCellHeight(62);
         JScrollPane scroll = new JScrollPane(missionList);
         scroll.setBorder(BorderFactory.createLineBorder(BORDER));
@@ -411,7 +468,7 @@ public final class MainFrame extends JFrame {
     private JPanel buildInspectorPanel() {
         JPanel content = new JPanel();
         content.setLayout(new javax.swing.BoxLayout(content, javax.swing.BoxLayout.Y_AXIS));
-        content.setBackground(Color.WHITE);
+        content.setBackground(UiTheme.SURFACE);
         content.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
         content.add(heading("Background activity"));
         content.add(gap(6));
@@ -476,7 +533,7 @@ public final class MainFrame extends JFrame {
         JScrollPane scroll = new JScrollPane(content);
         scroll.setBorder(null);
         JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(Color.WHITE);
+        panel.setBackground(UiTheme.SURFACE);
         panel.add(scroll);
         return panel;
     }
@@ -484,11 +541,11 @@ public final class MainFrame extends JFrame {
     private JPanel buildLearningPanel() {
         JPanel cards = new JPanel();
         cards.setLayout(new javax.swing.BoxLayout(cards, javax.swing.BoxLayout.Y_AXIS));
-        cards.setBackground(Color.WHITE);
+        cards.setBackground(UiTheme.SURFACE);
         cards.setBorder(BorderFactory.createEmptyBorder(10, 11, 10, 11));
         for (ArchitectureCard card : LearningCatalog.cards()) {
             JPanel item = new JPanel(new BorderLayout(0, 6));
-            item.setBackground(Color.WHITE);
+            item.setBackground(UiTheme.PANEL);
             item.setBorder(BorderFactory.createCompoundBorder(
                     BorderFactory.createLineBorder(BORDER),
                     BorderFactory.createEmptyBorder(10, 11, 10, 11)));
@@ -505,8 +562,8 @@ public final class MainFrame extends JFrame {
             body.setLineWrap(true);
             body.setWrapStyleWord(true);
             body.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-            body.setForeground(new Color(67, 84, 102));
-            body.setBackground(Color.WHITE);
+            body.setForeground(MUTED);
+            body.setBackground(UiTheme.PANEL);
             body.setBorder(null);
             item.add(title, BorderLayout.NORTH);
             item.add(body, BorderLayout.CENTER);
@@ -517,19 +574,19 @@ public final class MainFrame extends JFrame {
         JScrollPane scroll = new JScrollPane(cards);
         scroll.setBorder(null);
         JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(Color.WHITE);
+        panel.setBackground(UiTheme.SURFACE);
         panel.add(scroll);
         return panel;
     }
 
     private JPanel buildFooter() {
         JPanel footer = new JPanel(new BorderLayout());
-        footer.setBackground(Color.WHITE);
+        footer.setBackground(UiTheme.SURFACE);
         footer.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, BORDER),
                 BorderFactory.createEmptyBorder(8, 20, 8, 20)));
         statusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        statusLabel.setForeground(new Color(65, 91, 110));
+        statusLabel.setForeground(UiTheme.ACCENT);
         JLabel storage = new JLabel("LOCAL DATA  ·  " + paths.root());
         storage.setFont(new Font("Segoe UI", Font.PLAIN, 10));
         storage.setForeground(MUTED);
@@ -646,7 +703,17 @@ public final class MainFrame extends JFrame {
         long critical = snapshot.zones().stream().filter(value -> value.risk() == RiskLevel.CRITICAL).count();
         long warning = snapshot.zones().stream().filter(value -> value.risk() == RiskLevel.WARNING).count();
         long watch = snapshot.zones().stream().filter(value -> value.risk() == RiskLevel.WATCH).count();
-        riskSummary.setText("6 ZONES  ·  " + critical + " CRITICAL  ·  "
+        long active = snapshot.missions().stream()
+                .filter(mission -> mission.status().name().equals("ACTIVE")).count();
+        int exposedResidents = snapshot.zones().stream()
+                .mapToInt(ZoneSnapshot::exposedResidents).sum();
+        metricValues[0].setText(Integer.toString(snapshot.zones().size()));
+        metricValues[1].setText(Long.toString(critical));
+        metricValues[2].setText(Long.toString(active));
+        metricValues[3].setText(Integer.toString(
+                snapshot.availableResources().getOrDefault(ResourceType.PUMP, 0)));
+        metricValues[4].setText(String.format("%,d", exposedResidents));
+        riskSummary.setText(snapshot.zones().size() + " ZONES  ·  " + critical + " CRITICAL  ·  "
                 + warning + " WARNING  ·  " + watch + " WATCH");
         for (ResourceType type : ResourceType.values()) {
             int index = type.ordinal();
@@ -657,8 +724,7 @@ public final class MainFrame extends JFrame {
                     .sum();
             stockLabels[index].setText(type.label() + "   " + available
                     + " available   ·   " + committed + " committed");
-            stockLabels[index].setForeground(available == 0
-                    ? new Color(172, 75, 63) : INK);
+            stockLabels[index].setForeground(available == 0 ? UiTheme.CRITICAL : INK);
         }
         resourceSummary.setText("TICK " + snapshot.tick()
                 + "  ·  Active operations " + snapshot.missions().stream()
@@ -674,8 +740,6 @@ public final class MainFrame extends JFrame {
         if (!activityListModel.isEmpty()) {
             activityList.ensureIndexIsVisible(0);
         }
-        long active = snapshot.missions().stream()
-                .filter(mission -> mission.status().name().equals("ACTIVE")).count();
         eventSummary.setText("Interval " + snapshot.tick() + "  ·  " + active + " active field operation(s)");
     }
 
@@ -790,13 +854,13 @@ public final class MainFrame extends JFrame {
 
     private static JPanel insight(String title, String description) {
         JPanel panel = new JPanel(new BorderLayout(0, 3));
-        panel.setBackground(new Color(247, 250, 252));
+        panel.setBackground(UiTheme.PANEL);
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(BORDER),
                 BorderFactory.createEmptyBorder(7, 8, 7, 8)));
         JLabel heading = new JLabel(title);
         heading.setFont(new Font("Segoe UI", Font.BOLD, 10));
-        heading.setForeground(new Color(49, 89, 105));
+        heading.setForeground(UiTheme.ACCENT);
         JLabel text = new JLabel("<html>" + description + "</html>");
         text.setFont(new Font("Segoe UI", Font.PLAIN, 11));
         text.setForeground(MUTED);
@@ -815,16 +879,19 @@ public final class MainFrame extends JFrame {
     }
 
     private static void styleButton(JButton button, boolean primary) {
+        button.setUI(new BasicButtonUI());
         button.setFont(new Font("Segoe UI", Font.BOLD, 12));
         button.setMargin(new Insets(8, 12, 8, 12));
+        button.setOpaque(true);
+        button.setContentAreaFilled(true);
         button.setFocusPainted(false);
         if (primary) {
-            button.setBackground(new Color(34, 88, 111));
+            button.setBackground(UiTheme.ACCENT_DARK);
             button.setForeground(Color.WHITE);
             button.setOpaque(true);
             button.setBorderPainted(false);
         } else {
-            button.setBackground(Color.WHITE);
+            button.setBackground(UiTheme.ELEVATED);
             button.setForeground(INK);
             button.setBorder(BorderFactory.createLineBorder(BORDER));
         }
@@ -832,10 +899,10 @@ public final class MainFrame extends JFrame {
 
     private static Color riskColor(RiskLevel risk) {
         return switch (risk) {
-            case NORMAL -> new Color(38, 131, 97);
-            case WATCH -> new Color(164, 123, 32);
-            case WARNING -> new Color(191, 99, 37);
-            case CRITICAL -> new Color(185, 61, 65);
+            case NORMAL -> UiTheme.NORMAL;
+            case WATCH -> UiTheme.WATCH;
+            case WARNING -> UiTheme.WARNING;
+            case CRITICAL -> UiTheme.CRITICAL;
         };
     }
 

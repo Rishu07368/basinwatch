@@ -2,13 +2,13 @@
 
 ## Runtime shape
 
-The first release is a single-process, offline Swing desktop application. The event-dispatch thread (EDT) owns all Swing components. A `BasinEngine` owns the model, sensor feed, intake, bounded event buffer, response workers, and persistence services. Domain services publish immutable view snapshots to the EDT; they never mutate components directly.
+The first release is a single-process, offline Swing desktop application. The event-dispatch thread (EDT) owns all Swing components. A `BasinEngine` owns the model, sensor feed, intake, bounded event buffer, ordered response worker, and persistence services. Domain services publish immutable view snapshots to the EDT; they never mutate components directly.
 
 ```text
 SensorFeed (Thread)
   └─ PipedWriter ──> PipedReader + BufferedReader (SensorIntake, Runnable)
                            └─ bounded monitor-protected EventBuffer
-                                  └─ response worker Runnables
+                                  └─ single ordered response worker
                                        ├─ BasinModel / zone risk
                                        ├─ ResourceAllocator (atomic reservation)
                                        └─ Mission progress
@@ -34,8 +34,8 @@ Session snapshot ──> ObjectOutputStream → temporary save → atomic replac
 1. `SensorFeed extends Thread` emits a bounded number of encoded sensor readings per simulation interval through a connected `PipedWriter`. Interrupt and pipe close signal shutdown.
 2. `SensorIntake implements Runnable` reads complete lines from the connected `PipedReader`, parses and validates the record, then enqueues an immutable event.
 3. `EventBuffer` has a fixed capacity. `put` waits while full; `take` waits while empty. Both check their conditions in `while` loops while holding the same intrinsic monitor. Producers and close signal `notifyAll()`. Closing the buffer wakes every waiter and drains already accepted work before workers exit.
-4. A configured small number of `ResponseWorker implements Runnable` tasks consume events. Model transitions and resource reservation are guarded at the aggregate/allocator boundary; workers do not hold those locks while they wait, log, or publish UI updates.
-5. The engine uses explicit severity and timestamp ordering in application data. `Thread.setPriority` is available only to an optional experiment and cannot reorder incidents or guarantee execution.
+4. One `ResponseWorker implements Runnable` consumes the FIFO buffer and applies each state transition before taking the next event. This preserves acceptance order across model updates, mission progress, and snapshot publication without relying on monitor acquisition order among competing consumers. The archive and database remain independent asynchronous services.
+5. The engine uses explicit domain values for severity and timestamps; event application order is the order in which submissions are accepted. `Thread.setPriority` is available only to an optional archive experiment and cannot reorder incidents or guarantee execution.
 6. Shutdown stops new feed work, closes the pipe and event buffer, interrupts waits, joins owned threads with a bounded timeout, flushes and closes persistence writers, then saves a consistent snapshot. It reports a timeout or I/O error rather than pretending shutdown succeeded.
 
 ## Resource safety and deadlock
@@ -91,20 +91,21 @@ SQLite is an embedded, offline database: there is no server to install or start.
 | `resource_usage` | Resource type and amount allocated to a mission, with timestamp |
 | `operational_events` | Important risk and mission events with timestamp, zone, and message |
 
-`DatabaseService` owns a bounded single-thread executor. The response workers enqueue immutable values; SQL, history reads, startup initialization, and retention cleanup run on that worker rather than on Swing's EDT. Repositories use `PreparedStatement` parameters for application data, `ResultSet` for reads, and try-with-resources for connections/statements/results. Dispatch inserts the mission, its resource usage, and its event in one transaction. Completion updates the active mission and inserts a completion event in one transaction; SQL failures roll back the transaction. Old sensor rows are pruned after initialization. The project's Maven shade step bundles the driver so the existing `java -jar` run command and portable app-image continue working without a separate dependency classpath.
+`DatabaseService` owns a bounded single-thread executor. The ordered response worker enqueues immutable values; SQL, history reads, startup initialization, and retention cleanup run on that worker rather than on Swing's EDT. Repositories use `PreparedStatement` parameters for application data, `ResultSet` for reads, and try-with-resources for connections/statements/results. Dispatch inserts the mission, its resource usage, and its event in one transaction. Completion updates the active mission and inserts a completion event in one transaction; SQL failures roll back the transaction. Old sensor rows are pruned after initialization. Shutdown uses orderly executor draining rather than interrupting and discarding queued writes; a drain timeout is reported and can be retried while retaining file-based session recovery. The project's Maven shade step bundles the driver so the existing `java -jar` run command and portable app-image continue working without a separate dependency classpath.
 
 Database errors are reported in the application status/history view and operational log. A failed optional database write does not roll back or stop the simulation and does not replace its file-based persistence. UI history refreshes are asynchronous and update Swing components only on the EDT.
 
 ## UI structure
 
 - **Situation overview:** basin map, six zones with risk/water level, sensor markers, current simulation state, and a compact operational timeline.
+- **Live metrics:** monitored zones, critical zones, active missions, available pumps, and exposed residents are calculated from each immutable `BasinSnapshot`.
 - **Response desk:** available unit counts, active missions, incident detail, and validated dispatch controls.
 - **Activity feed:** chronological status, warning, allocation, completion, and persistence events.
 - **Systems inspector (optional):** worker states, queue depth/capacity, event throughput, save/archive paths and sizes, and experiment controls. It is diagnostic, not needed for normal operation.
 - **Architecture notes (optional):** short explanations of feature purpose, Java mechanism, source location, and failure mode, all keyed to the concept map.
 - **Database history:** asynchronous views of recent sensor readings, missions, operational events, and resource allocations stored in SQLite.
 
-Swing uses a restrained dark-navy operations palette with risk colors reserved for zone conditions. The basin view is a purposeful schematic, clearly marked as illustrative and not a geographic forecast.
+Swing uses shared `UiTheme` colors for its dark-navy surfaces, text, controls, tables, and risk states. The basin view is a purposeful schematic, clearly marked as illustrative and not a geographic forecast.
 
 ## Error boundaries
 
@@ -117,9 +118,13 @@ Swing uses a restrained dark-navy operations palette with risk colors reserved f
 - Interrupted workers preserve interrupt status and follow the orderly shutdown path.
 - Swing actions surface errors in a status banner/dialog and preserve the prior valid model state.
 
+## Snapshot and restore barrier
+
+All event submissions, including sensor intake and operator actions, pass through a fair read/write admission gate. A save stops an active sensor feed, acquires the exclusive gate, and waits until the FIFO buffer and its active consumer are drained before capturing the model. Restore uses the same boundary before replacing the model. New submissions wait at the gate and are applied only after the snapshot/restore operation has finished. The gate is released in a `finally` path; a failed restore restarts a feed that was active before the attempt. The event-buffer drain uses condition notification rather than periodic polling.
+
 ## Test strategy
 
-The Java assertion suite runs through `scripts/test.ps1` with Maven-provided SQLite JDBC dependencies. It covers atomic concurrent reservation, resource release/inventory conservation, bounded-buffer wait/wakeup and close behavior, event validation/processing, snapshot round-trip and corrupt/unsupported input, JDBC schema and repository operations, mission transactions, unavailable-database resilience, and safe engine shutdown. The script fails the process on any failed assertion.
+The Java assertion suite runs through `scripts/test.ps1` with Maven-provided SQLite JDBC dependencies. It covers atomic concurrent reservation, resource release/inventory conservation, bounded-buffer wait/wakeup/drain and close behavior, accepted event ordering, event validation/processing, snapshot round-trip and corrupt/unsupported input, save/restore failure recovery, JDBC schema and repository operations, mission transactions, pending-write shutdown flushing, unavailable-database resilience, and safe engine shutdown. The script fails the process on any failed assertion.
 
 ## Scope limits
 

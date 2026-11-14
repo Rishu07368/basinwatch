@@ -12,9 +12,10 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.SwingUtilities;
+import javax.swing.plaf.basic.BasicButtonUI;
+import javax.swing.plaf.basic.BasicComboBoxUI;
 import javax.swing.table.AbstractTableModel;
 import java.awt.BorderLayout;
-import java.awt.Color;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.time.ZoneId;
@@ -38,35 +39,45 @@ final class DatabaseHistoryPanel extends JPanel {
     DatabaseHistoryPanel(BasinEngine engine) {
         this.engine = engine;
         setLayout(new BorderLayout(0, 10));
-        setBackground(Color.WHITE);
+        setBackground(UiTheme.SURFACE);
         setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
 
         JPanel heading = new JPanel(new BorderLayout(0, 5));
         heading.setOpaque(false);
         JLabel title = new JLabel("Database history");
         title.setFont(new Font("Segoe UI", Font.BOLD, 19));
-        title.setForeground(new Color(26, 42, 61));
+        title.setForeground(UiTheme.TEXT);
         JLabel description = new JLabel(
                 "Recent readings and response records stored in the local SQLite database.");
         description.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        description.setForeground(new Color(100, 117, 137));
+        description.setForeground(UiTheme.MUTED);
         heading.add(title, BorderLayout.NORTH);
         heading.add(description, BorderLayout.SOUTH);
 
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         controls.setOpaque(false);
+        historyType.setUI(new BasicComboBoxUI());
+        historyType.setOpaque(true);
+        historyType.setBackground(UiTheme.ELEVATED);
+        historyType.setForeground(UiTheme.TEXT);
         historyType.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         JButton refresh = new JButton("Refresh history");
+        refresh.setUI(new BasicButtonUI());
         refresh.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        refresh.setBackground(UiTheme.ELEVATED);
+        refresh.setForeground(UiTheme.TEXT);
+        refresh.setOpaque(true);
+        refresh.setContentAreaFilled(true);
+        refresh.setBorder(BorderFactory.createLineBorder(UiTheme.BORDER));
         refresh.addActionListener(event -> refreshHistory());
         controls.add(new JLabel("Records"));
         controls.add(historyType);
         controls.add(refresh);
 
         databaseStatus.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        databaseStatus.setForeground(new Color(51, 87, 106));
+        databaseStatus.setForeground(UiTheme.ACCENT);
         resultStatus.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        resultStatus.setForeground(new Color(100, 117, 137));
+        resultStatus.setForeground(UiTheme.MUTED);
         JPanel statusPanel = new JPanel(new BorderLayout(0, 4));
         statusPanel.setOpaque(false);
         statusPanel.add(databaseStatus, BorderLayout.NORTH);
@@ -82,14 +93,19 @@ final class DatabaseHistoryPanel extends JPanel {
         top.add(controlsAndStatus, BorderLayout.SOUTH);
 
         JTable table = new JTable(tableModel);
+        table.setBackground(UiTheme.PANEL);
+        table.setForeground(UiTheme.TEXT);
+        table.setGridColor(UiTheme.BORDER);
         table.setFillsViewportHeight(true);
         table.setAutoCreateRowSorter(true);
         table.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         table.setRowHeight(25);
         table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
+        table.getTableHeader().setBackground(UiTheme.ELEVATED);
+        table.getTableHeader().setForeground(UiTheme.TEXT);
         table.getAccessibleContext().setAccessibleName("Persisted BasinWatch history");
         JScrollPane scroll = new JScrollPane(table);
-        scroll.setBorder(BorderFactory.createLineBorder(new Color(220, 228, 237)));
+        scroll.setBorder(BorderFactory.createLineBorder(UiTheme.BORDER));
 
         add(top, BorderLayout.NORTH);
         add(scroll, BorderLayout.CENTER);

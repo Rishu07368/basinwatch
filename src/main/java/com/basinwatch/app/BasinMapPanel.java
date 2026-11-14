@@ -21,8 +21,8 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 final class BasinMapPanel extends JPanel {
-    private static final Color BACKGROUND = new Color(14, 27, 44);
-    private static final Color WATER = new Color(46, 130, 172);
+    private static final Color BACKGROUND = UiTheme.PANEL;
+    private static final Color WATER = UiTheme.ACCENT;
     private BasinSnapshot snapshot;
     private String selectedZone = "MIL";
     private final Consumer<String> selectionHandler;
@@ -125,18 +125,21 @@ final class BasinMapPanel extends JPanel {
         g.setColor(new Color(16, 28, 41));
         g.drawString(riskLabel, box.x + box.width - riskWidth - 3, box.y + 33);
 
-        g.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        boolean compact = box.height < 135;
+        g.setFont(new Font("Segoe UI", Font.PLAIN, compact ? 10 : 12));
         g.setColor(new Color(188, 204, 220));
-        g.drawString("WATER LEVEL", box.x + 31, box.y + 59);
-        g.setFont(new Font("Segoe UI", Font.BOLD, 25));
+        g.drawString("WATER LEVEL", box.x + 31, box.y + (compact ? 51 : 59));
+        g.setFont(new Font("Segoe UI", Font.BOLD, compact ? 21 : 25));
         g.setColor(Color.WHITE);
-        g.drawString(String.format("%.2f m", zone.waterLevelMeters()), box.x + 31, box.y + 87);
-        g.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        g.drawString(String.format("%.2f m", zone.waterLevelMeters()),
+                box.x + 31, box.y + (compact ? 75 : 87));
+        g.setFont(new Font("Segoe UI", Font.PLAIN, compact ? 10 : 12));
         g.setColor(new Color(188, 204, 220));
         g.drawString(String.format("Rain  %.1f mm     Exposed  %,d",
-                zone.lastRainMillimeters(), zone.exposedResidents()), box.x + 31, box.y + 110);
+                zone.lastRainMillimeters(), zone.exposedResidents()),
+                box.x + 31, box.y + (compact ? 92 : 110));
 
-        int barY = box.y + box.height - 18;
+        int barY = box.y + box.height - (compact ? 12 : 18);
         int barWidth = box.width - 45;
         g.setColor(new Color(255, 255, 255, 35));
         g.fillRoundRect(box.x + 31, barY, barWidth, 6, 6, 6);
@@ -150,10 +153,10 @@ final class BasinMapPanel extends JPanel {
 
     private static Color colorFor(RiskLevel risk) {
         return switch (risk) {
-            case NORMAL -> new Color(82, 196, 158);
-            case WATCH -> new Color(235, 193, 84);
-            case WARNING -> new Color(242, 139, 74);
-            case CRITICAL -> new Color(239, 91, 97);
+            case NORMAL -> UiTheme.NORMAL;
+            case WATCH -> UiTheme.WATCH;
+            case WARNING -> UiTheme.WARNING;
+            case CRITICAL -> UiTheme.CRITICAL;
         };
     }
 }
